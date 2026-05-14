@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Ozontel CloudAgent — Local Test</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: sans-serif; background: #f0f2f5; }
+
+    .header {
+      background: #1a1a2e; color: #fff;
+      padding: 10px 20px; font-size: 13px;
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .header-title { font-weight: 600; margin-right: 4px; }
+
+    .badge {
+      display: inline-block; padding: 2px 8px;
+      border-radius: 4px; font-size: 11px; font-weight: 600;
+    }
+    .badge.ok     { background: #22c55e; color: #fff; }
+    .badge.err    { background: #ef4444; color: #fff; }
+    .badge.warn   { background: #f59e0b; color: #fff; }
+    .badge.grey   { background: #6b7280; color: #fff; }
+
+    .wrapper { display: flex; height: calc(100vh - 42px); }
+
+    /* ── Sidebar / iframe ── */
+    .sidebar {
+      width: 380px; min-width: 320px; position: relative;
+      background: #fff; border-right: 1px solid #e2e8f0;
+    }
+    iframe { width: 100%; height: 100%; border: none; display: block; }
+
+    /* ── SIP disconnect overlay ── */
+    .sip-overlay {
+      display: none;
+      position: absolute; inset: 0;
+      background: rgba(15, 15, 30, 0.82);
+      flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 12px; text-align: center; padding: 24px;
+      z-index: 10;
+    }
+    .sip-overlay.visible { display: flex; }
+    .sip-overlay .icon { font-size: 36px; }
+    .sip-overlay h3 { margin: 0; color: #fff; font-size: 15px; }
+    .sip-overlay p  { margin: 0; color: #cbd5e1; font-size: 12px; line-height: 1.5; }
+    .sip-overlay .countdown {
+      font-size: 12px; color: #94a3b8;
+    }
+    .btn-reconnect {
+      margin-top: 4px;
+      padding: 8px 20px; border: none; border-radius: 6px;
+      background: #3b82f6; color: #fff;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .btn-reconnect:hover { background: #2563eb; }
+    .btn-reconnect:disabled { background: #475569; cursor: default; }
+
+    /* ── Log panel ── */
+    .right-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .sim-controls {
+      background: #1e293b; padding: 8px 14px;
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      border-bottom: 1px solid #334155;
+    }
+    .sim-controls button {
+      padding: 4px 10px; border: 1px solid #475569; border-radius: 4px;
+      background: #334155; color: #e2e8f0; font-size: 11px; cursor: pointer;
+    }
+    .sim-controls button:hover { background: #475569; }
+    .log { flex: 1; padding: 14px; overflow-y: auto; font-size: 11.5px; font-family: monospace; }
+    .log p { margin: 2px 0; line-height: 1.5; }
+    .log .info  { color: #2563eb; }
+    .log .warn  { color: #d97706; }
+    .log .error { color: #dc2626; }
+    .log .ok    { color: #16a34a; }
+    .log .event { color: #7c3aed; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <span class="header-title">Ozontel CloudAgent</span>
+  <span id="ctx-badge"  class="badge grey">checking…</span>
+  <span id="mic-badge"  class="badge grey">mic: ?</span>
+  <span id="sip-badge"  class="badge grey">SIP: —</span>
+  <span id="agent-badge" class="badge grey">agent: offline</span>
+</div>
+
+<div class="wrapper">
+  <div class="sidebar">
+    <iframe
+      id="cloudagent"
+      src="https://agent.cloudagent.ozonetel.com/login"
+      allow="microphone; autoplay; speaker-selection"
+      referrerpolicy="origin"
+      title="Ozontel CloudAgent"
+    ></iframe>
+
+    <!-- SIP disconnect overlay -->
+    <div class="sip-overlay" id="sip-overlay">
+      <div class="icon">📵</div>
+      <h3>SIP Disconnected</h3>
+      <p>The phone connection dropped.<br>This usually happens when the VPN re-negotiates.</p>
+      <div class="countdown" id="countdown"></div>
+      <button class="btn-reconnect" id="btn-reconnect" onclick="reconnect()">Reconnect Now</button>
+    </div>
+  </div>
+
+  <div class="right-panel">
+    <div class="sim-controls">
+      <span style="font-size:11px;font-weight:600;color:#475569;">SIMULATE</span>
+      <button onclick="simulateEvent('sip_disconnect')">SIP Disconnect</button>
+      <button onclick="simulateEvent('sip_ready')">SIP Ready</button>
+      <button onclick="simulateEvent('login')">Login</button>
+      <button onclick="simulateEvent('logout')">Logout</button>
+    </div>
+    <div class="log" id="log">
+      <p class="info">— diagnostic log —</p>
+    </div>
+  </div>
+</div>
+
+<script>
+  const logEl = document.getElementById('log');
+  const sipOverlay = document.getElementById('sip-overlay');
+  const countdownEl = document.getElementById('countdown');
+  const reconnectBtn = document.getElementById('btn-reconnect');
+  const sipBadge = document.getElementById('sip-badge');
+  const agentBadge = document.getElementById('agent-badge');
+
+  let autoReconnectTimer = null;
+  let countdownInterval = null;
+  const AUTO_RECONNECT_SEC = 10;
+
+  function log(msg, type = 'info') {
+    const p = document.createElement('p');
+    p.className = type;
+    p.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    logEl.appendChild(p);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function setSipBadge(state) {
+    const map = {
+      ready:        { label: 'SIP: Ready',        cls: 'ok' },
+      disconnected: { label: 'SIP: Disconnected', cls: 'err' },
+      connecting:   { label: 'SIP: Connecting…',  cls: 'warn' },
+      offline:      { label: 'SIP: —',            cls: 'grey' },
+    };
+    const s = map[state] || map.offline;
+    sipBadge.textContent = s.label;
+    sipBadge.className = `badge ${s.cls}`;
+  }
+
+  function reconnect() {
+    clearAutoReconnect();
+    reconnectBtn.disabled = true;
+    reconnectBtn.textContent = 'Reconnecting…';
+    setSipBadge('connecting');
+    log('Manual reconnect triggered — reloading CloudAgent iframe', 'warn');
+
+    // Reload iframe by reassigning src
+    const iframe = document.getElementById('cloudagent');
+    iframe.src = iframe.src;
+
+    // Re-enable button after 5s in case iframe load stalls
+    setTimeout(() => {
+      reconnectBtn.disabled = false;
+      reconnectBtn.textContent = 'Reconnect Now';
+    }, 5000);
+  }
+
+  function startAutoReconnect() {
+    let remaining = AUTO_RECONNECT_SEC;
+    countdownEl.textContent = `Auto-reconnecting in ${remaining}s…`;
+
+    countdownInterval = setInterval(() => {
+      remaining--;
+      countdownEl.textContent = `Auto-reconnecting in ${remaining}s…`;
+      if (remaining <= 0) {
+        clearInterval(countdownInterval);
+        countdownEl.textContent = 'Reconnecting…';
+        reconnect();
+      }
+    }, 1000);
+
+    autoReconnectTimer = setTimeout(() => {}, AUTO_RECONNECT_SEC * 1000);
+  }
+
+  function clearAutoReconnect() {
+    clearInterval(countdownInterval);
+    clearTimeout(autoReconnectTimer);
+    countdownEl.textContent = '';
+  }
+
+  function showSipDisconnected() {
+    sipOverlay.classList.add('visible');
+    reconnectBtn.disabled = false;
+    reconnectBtn.textContent = 'Reconnect Now';
+    startAutoReconnect();
+  }
+
+  function hideSipOverlay() {
+    sipOverlay.classList.remove('visible');
+    clearAutoReconnect();
+  }
+
+  // ── postMessage handler ──
+  window.addEventListener('message', (event) => {
+    if (!event.origin.includes('ozonetel.com')) return;
+    handleCloudAgentMessage(event.data);
+  });
+
+  // ── Startup checks ──
+  const ctxBadge = document.getElementById('ctx-badge');
+  if (window.isSecureContext) {
+    ctxBadge.textContent = 'secure ✓';
+    ctxBadge.className = 'badge ok';
+    log('Secure context: YES', 'ok');
+  } else {
+    ctxBadge.textContent = 'INSECURE';
+    ctxBadge.className = 'badge err';
+    log('INSECURE CONTEXT — mic + SIP delegation will be blocked', 'error');
+  }
+
+  navigator.permissions.query({ name: 'microphone' }).then(result => {
+    const micBadge = document.getElementById('mic-badge');
+    const update = () => {
+      micBadge.textContent = `mic: ${result.state}`;
+      micBadge.className = result.state === 'granted' ? 'badge ok' : 'badge err';
+    };
+    update();
+    log(`Microphone: ${result.state}`, result.state === 'granted' ? 'ok' : 'warn');
+    result.onchange = update;
+  });
+
+  log(`Origin: ${location.origin} — ${location.protocol === 'https:' ? 'OK' : 'needs https'}`);
+
+  // ── Simulate events for testing ──
+  function simulateEvent(type) {
+    const payloads = {
+      sip_disconnect: { action: 'changeState', token: { state: 'SIP disconnected' } },
+      sip_ready:      { action: 'changeState', token: { state: 'Ready' } },
+      login:          { action: 'login',  token: {} },
+      logout:         { action: 'logout', token: {} },
+    };
+    const data = payloads[type];
+    if (!data) return;
+    log(`[SIM] Firing: ${JSON.stringify(data)}`, 'warn');
+    // Dispatch as if it came from the iframe (bypass origin check for simulation)
+    handleCloudAgentMessage(data);
+  }
+
+  function handleCloudAgentMessage(data) {
+    const { action, token } = data || {};
+    log(`postMessage ← ${JSON.stringify(data)}`, 'event');
+
+    if (action === 'login') {
+      agentBadge.textContent = 'agent: logged in';
+      agentBadge.className = 'badge warn';
+      setSipBadge('connecting');
+    }
+    if (action === 'changeState') {
+      const state = token?.state || '';
+      if (state === 'Ready') {
+        hideSipOverlay();
+        setSipBadge('ready');
+        agentBadge.textContent = 'agent: ready';
+        agentBadge.className = 'badge ok';
+        log('SIP registered — agent is Ready', 'ok');
+      }
+      if (state === 'SIP disconnected' || state.toLowerCase().includes('sip')) {
+        setSipBadge('disconnected');
+        log('SIP disconnected — showing reconnect overlay', 'error');
+        showSipDisconnected();
+      }
+    }
+    if (action === 'logout') {
+      hideSipOverlay();
+      setSipBadge('offline');
+      agentBadge.textContent = 'agent: offline';
+      agentBadge.className = 'badge grey';
+    }
+  }
+</script>
+
+</body>
+</html>
